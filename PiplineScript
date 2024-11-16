@@ -1,0 +1,112 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'jdk17'
+        maven 'maven3'
+    }
+    environment {
+        Scanner_home = tool 'sonar-scanner'
+    }
+
+    stages {
+        stage('Git Checkout') {
+            steps {
+                echo 'Checking out code from Git repository...'
+                git branch: 'main', credentialsId: 'gitcred', url: 'https://github.com/MehrankhanDevOps/CICD.git'
+            }
+        }
+            stage('Set Version') {
+                steps {
+                    // Set the version in the POM using Maven, adding '-SNAPSHOT' for development
+                    sh 'mvn versions:set -DnewVersion=${BUILD_VERSION}-SNAPSHOT'    
+                }
+            }
+
+
+        stage('Compile') {
+            steps {
+                echo 'Compiling the source code...'
+                sh 'mvn compile'
+            }
+        }
+        stage('Test') {
+            steps {
+                echo 'Running tests...'
+                sh 'mvn test'
+            }
+        }
+        stage('File System Scan') {
+            steps {
+                echo 'Running Trivy file system scan...'
+                // Perform Trivy scan, allowing the database to download if needed
+                sh '''
+                    echo "Ensuring Trivy database is up-to-date..."
+                    trivy fs --format table -o trivy-fs-scan-report.html .
+                '''
+            }
+        }
+        stage('Sonar Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                   sh '''
+                    $Scanner_home/bin/sonar-scanner \
+                    -Dsonar.projectName=Koigame \
+                    -Dsonar.projectKey=Koigame \
+                    -Dsonar.sources=. 
+                ''' 
+                }
+               }
+        }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId : 'sonar'
+                }
+               }
+        }
+        stage('Build') {
+            steps {
+                sh 'mvn package'
+               }
+        }        
+        stage('Publish to Nexus') {
+            steps {
+               withMaven(globalMavenSettingsConfig: 'global-settings', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                sh 'mvn deploy'
+                } 
+               }
+        }   
+      stage('Docker Build') {
+            steps {
+                script{
+                    // This step should not normally be used in your script. Consult the inline help for details.
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                    sh 'docker build -t mehrankhan091/boardgame:latest .'
+                    }
+                }
+            } 
+        }
+      stage('Docker Image Scan') {
+            steps {
+                    echo 'Running Trivy file system scan...'
+                // Perform Trivy scan, allowing the database to download if needed
+                sh '''
+                    echo "Ensuring Trivy database is up-to-date..."
+                    trivy image --skip-db-update --timeout 5m --format table -o trivy-image-scan-report.html mehrankhan091/boardgame:latest
+
+                '''
+            }
+        }
+            stage('Docker Push') {
+            steps {
+                script{
+                    // This step should not normally be used in your script. Consult the inline help for details.
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                    sh 'docker push mehrankhan091/boardgame:latest'
+                    }
+                }
+            } 
+        }       
+    }
+}
+
